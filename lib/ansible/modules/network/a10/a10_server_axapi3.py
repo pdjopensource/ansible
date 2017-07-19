@@ -3,7 +3,7 @@
 
 """
 Ansible module to manage A10 Networks slb server objects
-(c) 2014, Mischa Peters <mpeters@a10networks.com>, 2016, Eric Chou <ericc@a10networks.com>
+(c) 2014, Mischa Peters <mpeters@a10networks.com>, 2016, Eric Chou <ericc@a10networks.com>, 2017, David Haupt <pdjopensource@gmail.com>
 
 This file is part of Ansible
 
@@ -59,13 +59,13 @@ options:
         and C(protocol:).
     required: false
     default: null
-  operation:
+  state:
     description:
-      - Create, Update or Remove SLB server. For create and update operation, we use the IP address and server
+      - Create or Remove SLB server. For create, we use the IP address and server
         name specified in the POST message. For delete operation, we use the server name in the request URI.
     required: false
-    default: create
-    choices: ['create', 'update', 'remove']
+    default: present
+    choices: ['present', 'absent']
   validate_certs:
     description:
       - If C(no), SSL certificates will not be validated. This should only be used
@@ -82,7 +82,7 @@ RETURN = '''
 
 EXAMPLES = '''
 # Create a new server
-- a10_server:
+- a10_server_axapi3:
     host: a10.mydomain.com
     username: myadmin
     password: mypassword
@@ -150,7 +150,7 @@ def main():
     argument_spec.update(url_argument_spec())
     argument_spec.update(
         dict(
-            operation=dict(type='str', default='create', choices=['create', 'update', 'delete']),
+            state=dict(type='str', default='present', choices=['present', 'absent']),
             server_name=dict(type='str', aliases=['server'], required=True),
             server_ip=dict(type='str', aliases=['ip', 'address'], required=True),
             server_status=dict(type='str', default='enable', aliases=['action'], choices=['enable', 'disable']),
@@ -166,7 +166,7 @@ def main():
     host = module.params['host']
     username = module.params['username']
     password = module.params['password']
-    operation = module.params['operation']
+    state = module.params['state']
     write_config = module.params['write_config']
     slb_server = module.params['server_name']
     slb_server_ip = module.params['server_ip']
@@ -197,54 +197,37 @@ def main():
     if slb_server_status:
         json_post['server-list'][0]['action'] = slb_server_status
 
-    slb_server_data = axapi_call_v3(module, axapi_base_url+'slb/server/', method='GET', body='', signature=signature)
+    slb_server_data = axapi_call_v3(module, axapi_base_url+'slb/server/' + slb_name, method='GET', body='', signature=signature)
 
-    # for empty slb server list
-    if axapi_failure(slb_server_data):
-        slb_server_exists = False
-    else:
-        slb_server_list = [server['name'] for server in slb_server_data['server-list']]
-        if slb_server in slb_server_list:
-            slb_server_exists = True
-        else:
-            slb_server_exists = False
+    slb_server_exists = slb_server_data and slb_server_data.get('server') and slb_server_data.get('server').get('name')
+    result = ''
+    changed=False
 
-    changed = False
-    if operation == 'create':
-        if slb_server_exists is False:
-            result = axapi_call_v3(module, axapi_base_url+'slb/server/', method='POST', body=json.dumps(json_post), signature=signature)
-            if axapi_failure(result):
-                module.fail_json(msg="failed to create the server: %s" % result['response']['err']['msg'])
-            changed = True
-        else:
-            module.fail_json(msg="server already exists, use state='update' instead")
-            changed = False
-        # if we changed things, get the full info regarding result
-        if changed:
-            result = axapi_call_v3(module, axapi_base_url + 'slb/server/' + slb_server, method='GET', body='', signature=signature)
-        else:
-            result = slb_server_data
-    elif operation == 'delete':
-        if slb_server_exists:
-            result = axapi_call_v3(module, axapi_base_url + 'slb/server/' + slb_server, method='DELETE', body='', signature=signature)
-            if axapi_failure(result):
-                module.fail_json(msg="failed to delete server: %s" % result['response']['err']['msg'])
-            changed = True
-        else:
-            result = dict(msg="the server was not present")
-    elif operation == 'update':
-        if slb_server_exists:
-            result = axapi_call_v3(module, axapi_base_url + 'slb/server/', method='PUT', body=json.dumps(json_post), signature=signature)
-            if axapi_failure(result):
-                module.fail_json(msg="failed to update server: %s" % result['response']['err']['msg'])
-            changed = True
-        else:
-            result = dict(msg="the server was not present")
+    if state == 'absent' and not slb_server_exists:
+        result = slb_server_data
 
-    # if the config has changed, save the config unless otherwise requested
-    if changed and write_config:
+    elif state == 'present' and slb_server_exists:
+        result = slb_server_data
+
+    elif state == 'absent' and slb_server_exists:
+        result = axapi_call_v3(module, axapi_base_url+'slb/server/' + slb_name, method='DELETE', body='', signature=signature)
+        if axapi_failure(result):
+            axapi_call_v3(module, axapi_base_url + 'logoff/', method='POST', body='', signature=signature)
+            module.fail_json(msg="failed to delete the server: %s" % result['response']['err']['msg'])
+        changed=True
+
+    elif state == 'present' and not slb_server_exists:
+        result = axapi_call_v3(module, axapi_base_url+'slb/server/', method='POST', body=json.dumps(json_post), signature=signature)
+        if axapi_failure(result):
+            axapi_call_v3(module, axapi_base_url + 'logoff/', method='POST', body='', signature=signature)
+            module.fail_json(msg="failed to create the server: %s" % result['response']['err']['msg'])
+        changed=True
+
+    # if the config has changed, save the config
+    if changed:
         write_result = axapi_call_v3(module, axapi_base_url+'write/memory/', method='POST', body='', signature=signature)
         if axapi_failure(write_result):
+            axapi_call_v3(module, axapi_base_url + 'logoff/', method='POST', body='', signature=signature)
             module.fail_json(msg="failed to save the configuration: %s" % write_result['response']['err']['msg'])
 
     # log out gracefully and exit
