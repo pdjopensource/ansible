@@ -113,6 +113,10 @@ def axapi_call_v3(module, url, method=None, body=None, signature=None):
     else:
         headers = {'content-type': 'application/json'}
     rsp, info = fetch_url(module, url, method=method, data=body, headers=headers)
+
+    if info['status'] == 404:
+        return ''
+
     if not rsp or info['status'] >= 400:
         module.fail_json(msg="failed to connect (status code %s), error was %s" % (info['status'], info.get('msg', 'no error given')))
     try:
