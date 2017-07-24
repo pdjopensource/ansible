@@ -26,76 +26,41 @@ ANSIBLE_METADATA = {'metadata_version': '1.0',
 
 
 DOCUMENTATION = '''
-module: a10_health_monitor_axapi3
+module: a10_template_server_axapi3
 version_added: 3.X
 short_description: Manage A10 Networks AX/SoftAX/Thunder/vThunder devices' health monitors.
 description:
-    - Manage SLB (Server Load Balancing) health monitors objects on A10 Networks devices via aXAPIv3.
+    - Manage SLB (Server Load Balancing) server template objects on A10 Networks devices via aXAPIv3.
 author: "David Haupt 2017 (pdjopensource@gmail.com), Eric Chou (@ericchou) 2016, Mischa Peters (@mischapeters) 2014"
 notes:
     - Requires A10 Networks aXAPI 3.0
     - For now only http health monitors are implemented.
 extends_documentation_fragment: a10
 options:
-  health_monitor:
+  template_server:
     description:
-      - The SLB (Server Load Balancing) health monitor name
+      - The SLB (Server Load Balancing) template server name
     required: true
     default: null
-    aliases: ['name', 'monitor']
-  health_monitor_type:
-    description:
-      - The SLB health monitor method.
-    required: false
-    default: http
-    aliases: ['method', 'type']
-    choices: ['icmp', 'tcp', 'http']
+    aliases: ['name', 'template']
   state:
     description:
-      - The health monitor state
+      - The template state
     default: present
     choices: ['present','absent']
-  retry:
+  health_check:
     description:
-      - Specify the Healthcheck Retries (Retry Count (default 3))
+      - Enables health monitoring of ports that use this template. Specify the name of a configured health monitor. If you omit this command or you enter it without the monitor-name, the default ICMP health monitor is used: an ICMP ping (echo request) is sent every 30 seconds. If the ping fails 2 times consecutively, the ACOS device sets the server state to DOWN..
     required: false
-    default: 3
-  up_retry:
+  health_check_disable:
     description:
-      - Specify the Healthcheck Retries before declaring target up (Up-retry count (default 1))
+      - Disables health monitoring of servers that use this template.
     required: false
-    default: 1
-  interval:
+    choices: ['true','false']
+  weight:
     description:
-      - Specify the health check interval in seconds.
+      - Assigns an administrative weight to the server, for weighted load balancing. The numbered parameter is the administrative weight assigned to the server.
     required: false
-    default: 5
-  timeout:
-    description:
-      - Specify the health check interval in seconds.
-    required: false
-    default: 5
-  url_type:
-    description:
-      - Specify the HTTP method to use - GET, POST or HEAD.
-    required: false
-    choices: ['GET', 'POST', 'HEAD']
-    default: GET
-  url_path:
-    description:
-      - Specify URL path, default is “/”
-    required: false
-    default: '/'
-  http_port:
-    description:
-      - Specify the HTTP port number.
-    required: false
-    default: 80
-  text_regex:
-    description:
-      - Specify text expected with Regex
-    required: false
-    default: '*'
   validate_certs:
     description:
       - If C(no), SSL certificates will not be validated. This should only be used
@@ -107,32 +72,30 @@ options:
 '''
 
 EXAMPLES = '''
-# Create a new service-group
-- a10_health_monitor_axapi3:
+# Create a new server template
+- a10_template_port_axapi3:
     host: a10.mydomain.com
     username: myadmin
     password: mypassword
-    health_monitor: hm_http
-    health_monitor_type: http
-    url_path: '/index.jsp'
-    http_port: 8080
-    text_regex: '200 OK'
+    template_server: my_template_server
+    state: present
+    health_check: my_hm_http
 
 '''
 
 RETURN = '''
 content:
-  description: the full info regarding the health monitor
+  description: The full info regarding the server template
   returned: success
   type: string
-  sample: "mynewservicegroup"
+  sample: "template server"
 
 '''
 import json
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.urls import url_argument_spec
-from ansible.module_utils.a10 import axapi_call_v3, a10_argument_spec, axapi_authenticate_v3, axapi_failure
+from ansible.module_utils.a10 import axapi_call_v3, a10_argument_spec, axapi_authenticate_v3, axapi_failure, axapi_enabled_disabled
 from ansible.module_utils.a10 import AXAPI_PORT_PROTOCOLS
 
 def main():
@@ -141,16 +104,10 @@ def main():
     argument_spec.update(
         dict(
             state=dict(type='str', default='present', choices=['present','absent']),
-            health_monitor=dict(type='str', aliases=['name', 'monitor'], required=True),
-            health_monitor_type=dict(type='str', aliases=['method','type'], choices=['icmp','tcp', 'http'], default='http'),
-            retry=dict(type='int', default=3),
-            up_retry=dict(type='int', default=1),
-            interval=dict(type='int', default=5),
-            timeout=dict(type='int', default=5),
-            url_type=dict(type='str', choices=['GET','POST', 'HEAD'], default='GET'),
-            url_path=dict(type='str', default='/'),
-            http_port=dict(type='int', default=80),
-            text_regex=dict(type='str', default='*')
+            template_server=dict(type='str', aliases=['name', 'template'], required=True),
+            health_check=dict(type='str', aliases=['monitor']),
+            health_check_disable=dict(type='str'),
+            weight=dict(type='int')
         )
     )
 
@@ -163,18 +120,11 @@ def main():
     username = module.params['username']
     password = module.params['password']
     state = module.params['state']
-    write_config = module.params['write_config']
 
-    health_hm = module.params['health_monitor']
-    health_hm_type = module.params['health_monitor_type']
-    health_retry = module.params['retry']
-    health_up_retry = module.params['up_retry']
-    health_interval = module.params['interval']
-    health_timeout = module.params['timeout']
-    health_url_type = module.params['url_type']
-    health_url_path = module.params['url_path']
-    health_http_port = module.params['http_port']
-    health_text_regex = module.params['text_regex']
+    template_server = module.params['template_server']
+    template_monitor = module.params['health_check']
+    template_monitor_disable = module.params['health_check_disable']
+    template_weight = module.params['weight']
 
     axapi_base_url = 'https://{}/axapi/v3/'.format(host)
     axapi_auth_url = axapi_base_url + 'auth/'
@@ -184,28 +134,21 @@ def main():
     #validate_servers(module, slb_servers)
 
     json_post = {
-        "monitor": {
-            "name": health_hm,
-            "retry": health_retry,
-            "up-retry": health_up_retry,
-#            "timeout": 5,
-            "method": {
-                health_hm_type: {
-                    "http": 1,
-                    "http-expect": 1,
-                    "http-port": health_http_port,
-                    "http-url": 1,
-                    "text-regex": health_text_regex,
-                    "url-path": health_url_path,
-                    "url-type": health_url_type
-                }
-            }
+        "server": {
+            "name": template_server,
         }
     }
 
-    slb_server_data = axapi_call_v3(module, axapi_base_url+'health/monitor/' + health_hm, method='GET', body='', signature=signature)
+    if template_monitor:
+        json_post['server']['health-check'] = template_monitor
+    elif template_monitor_disable:
+        json_post['server']['health-check-disable'] = axapi_enabled_disabled(template_monitor_disable)
+    if template_weight:
+        json_post['server']['weight'] = template_weight
 
-    slb_server_exists = slb_server_data and slb_server_data.get('monitor') and slb_server_data.get('monitor').get('name')
+    slb_server_data = axapi_call_v3(module, axapi_base_url+'slb/template/server/' + template_server, method='GET', body='', signature=signature)
+
+    slb_server_exists = slb_server_data and slb_server_data.get('server') and slb_server_data.get('server').get('name')
     result = ''
     changed=False
 
@@ -216,17 +159,17 @@ def main():
         result = slb_server_data
 
     elif state == 'absent' and slb_server_exists:
-        result = axapi_call_v3(module, axapi_base_url+'health/monitor/' + health_hm, method='DELETE', body='', signature=signature)
+        result = axapi_call_v3(module, axapi_base_url+'slb/template/server/' + template_server, method='DELETE', body='', signature=signature)
         if axapi_failure(result):
             axapi_call_v3(module, axapi_base_url + 'logoff/', method='POST', body='', signature=signature)
-            module.fail_json(msg="failed to delete the health monitor: %s" % result['response']['err']['msg'])
+            module.fail_json(msg="failed to delete the server template: %s" % result['response']['err']['msg'])
         changed=True
 
     elif state == 'present' and not slb_server_exists:
-        result = axapi_call_v3(module, axapi_base_url+'health/monitor/', method='POST', body=json.dumps(json_post), signature=signature)
+        result = axapi_call_v3(module, axapi_base_url+'slb/template/server/', method='POST', body=json.dumps(json_post), signature=signature)
         if axapi_failure(result):
             axapi_call_v3(module, axapi_base_url + 'logoff/', method='POST', body='', signature=signature)
-            module.fail_json(msg="failed to create the health monitor: %s" % result['response']['err']['msg'])
+            module.fail_json(msg="failed to create the server template: %s" % result['response']['err']['msg'])
         changed=True
 
     # if the config has changed, save the config

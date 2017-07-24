@@ -145,6 +145,8 @@ def axapi_enabled_disabled(flag):
     '''
     if flag == 'enabled':
         return 1
+    elif flag == 'true':
+        return 1
     else:
         return 0
 
