@@ -30,7 +30,8 @@ short_description: Generate an OpenSSL public key from its private key.
 description:
     - "This module allows one to (re)generate OpenSSL public keys from their private keys.
        It uses the pyOpenSSL python library to interact with openssl. Keys are generated
-       in PEM format. This module works only if the version of PyOpenSSL is recent enough (> 16.0.0)"
+       in PEM format. This module works only if the version of PyOpenSSL is recent enough (> 16.0.0).
+       This module uses file common arguments to specify generated file permissions."
 requirements:
     - "python-pyOpenSSL"
 options:
@@ -46,6 +47,13 @@ options:
         choices: [ True, False ]
         description:
             - Should the key be regenerated even it it already exists
+    format:
+        required: false
+        default: PEM
+        choices: [ PEM, OpenSSH ]
+        description:
+            - The format of the public key.
+        version_added: "2.4"
     path:
         required: true
         description:
@@ -54,13 +62,31 @@ options:
         required: true
         description:
             - Path to the TLS/SSL private key from which to generate the public key.
+    privatekey_passphrase:
+        required: false
+        description:
+            - The passphrase for the privatekey.
+        version_added: "2.4"
 '''
 
 EXAMPLES = '''
-# Generate an OpenSSL public key.
+# Generate an OpenSSL public key in PEM format.
 - openssl_publickey:
     path: /etc/ssl/public/ansible.com.pem
     privatekey_path: /etc/ssl/private/ansible.com.pem
+
+# Generate an OpenSSL public key in OpenSSH v2 format.
+- openssl_publickey:
+    path: /etc/ssl/public/ansible.com.pem
+    privatekey_path: /etc/ssl/private/ansible.com.pem
+    format: OpenSSH
+
+# Generate an OpenSSL public key with a passphrase protected
+# private key
+- openssl_publickey:
+    path: /etc/ssl/public/ansible.com.pem
+    privatekey_path: /etc/ssl/private/ansible.com.pem
+    privatekey_passphrase: ansible
 
 # Force regenerate an OpenSSL public key if it already exists
 - openssl_publickey:
@@ -81,6 +107,11 @@ privatekey:
     returned: changed or success
     type: string
     sample: /etc/ssl/private/ansible.com.pem
+format:
+    description: The format of the public key (PEM, OpenSSH, ...)
+    returned: changed or success
+    type: string
+    sample: PEM
 filename:
     description: Path to the generated TLS/SSL public key file
     returned: changed or success
@@ -107,6 +138,8 @@ from ansible.module_utils.pycompat24 import get_exception
 
 try:
     from OpenSSL import crypto
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization as crypto_serialization
 except ImportError:
     pyopenssl_found = False
 else:
@@ -125,14 +158,15 @@ class PublicKey(object):
     def __init__(self, module):
         self.state = module.params['state']
         self.force = module.params['force']
+        self.format = module.params['format']
         self.name = os.path.basename(module.params['path'])
         self.path = module.params['path']
         self.privatekey_path = module.params['privatekey_path']
+        self.privatekey_passphrase = module.params['privatekey_passphrase']
         self.privatekey = None
         self.changed = True
         self.fingerprint = {}
         self.check_mode = module.check_mode
-
 
     def generate(self, module):
         """Generate the public key."""
@@ -140,11 +174,26 @@ class PublicKey(object):
         if not os.path.exists(self.path) or self.force:
             try:
                 privatekey_content = open(self.privatekey_path, 'r').read()
-                self.privatekey = crypto.load_privatekey(crypto.FILETYPE_PEM, privatekey_content)
-                publickey_content = crypto.dump_publickey(crypto.FILETYPE_PEM, self.privatekey)
+
+                if self.format == 'OpenSSH':
+                    key = crypto_serialization.load_pem_private_key(privatekey_content,
+                                                                    password=self.privatekey_passphrase,
+                                                                    backend=default_backend())
+                    publickey_content = key.public_key().public_bytes(
+                        crypto_serialization.Encoding.OpenSSH,
+                        crypto_serialization.PublicFormat.OpenSSH
+                    )
+                else:
+                    self.privatekey = crypto.load_privatekey(crypto.FILETYPE_PEM, privatekey_content)
+                    publickey_content = crypto.dump_publickey(crypto.FILETYPE_PEM, self.privatekey)
+
                 publickey_file = open(self.path, 'w')
                 publickey_file.write(publickey_content)
                 publickey_file.close()
+
+                file_args = module.load_file_common_arguments(module.params)
+                if module.set_fs_attributes_if_different(file_args, False):
+                    self.changed = True
             except (IOError, OSError) as exc:
                 raise PublicKeyError(exc)
             except AttributeError as exc:
@@ -154,7 +203,7 @@ class PublicKey(object):
             self.changed = False
 
         file_args = module.load_file_common_arguments(module.params)
-        self.fingerprint = get_fingerprint(self.privatekey_path)
+        self.fingerprint = get_fingerprint(self.privatekey_path, self.privatekey_passphrase)
         if module.set_fs_attributes_if_different(file_args, False):
             self.changed = True
 
@@ -175,6 +224,7 @@ class PublicKey(object):
         result = {
             'privatekey': self.privatekey_path,
             'filename': self.path,
+            'format': self.format,
             'changed': self.changed,
             'fingerprint': self.fingerprint,
         }
@@ -190,6 +240,8 @@ def main():
             force=dict(default=False, type='bool'),
             path=dict(required=True, type='path'),
             privatekey_path=dict(type='path'),
+            format=dict(type='str', choices=['PEM', 'OpenSSH'], default='PEM'),
+            privatekey_passphrase=dict(type='path', no_log=True),
         ),
         supports_check_mode = True,
         add_file_common_args = True,

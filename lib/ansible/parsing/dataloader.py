@@ -29,7 +29,7 @@ from yaml import YAMLError
 from ansible.errors import AnsibleFileNotFound, AnsibleParserError
 from ansible.errors.yaml_strings import YAML_SYNTAX_ERROR
 from ansible.module_utils.basic import is_executable
-from ansible.module_utils.six import text_type, string_types
+from ansible.module_utils.six import binary_type, text_type
 from ansible.module_utils._text import to_bytes, to_native, to_text
 from ansible.parsing.vault import VaultLib, b_HEADER, is_encrypted, is_encrypted_file
 from ansible.parsing.quoting import unquote
@@ -184,7 +184,7 @@ class DataLoader:
         Reads the file contents from the given file name, and will decrypt them
         if they are found to be vault-encrypted.
         '''
-        if not file_name or not isinstance(file_name, string_types):
+        if not file_name or not isinstance(file_name, (binary_type, text_type)):
             raise AnsibleParserError("Invalid filename: '%s'" % str(file_name))
 
         b_file_name = to_bytes(file_name)
@@ -305,9 +305,14 @@ class DataLoader:
 
             # try to create absolute path for loader basedir + templates/files/vars + filename
             search.append(unfrackpath(os.path.join(dirname, source), follow=False))
+
+            # try to create absolute path for loader basedir
+            search.append(unfrackpath(os.path.join(basedir, source), follow=False))
+
+            # try to create absolute path for  dirname + filename
             search.append(self.path_dwim(os.path.join(dirname, source)))
 
-            # try to create absolute path for loader basedir + filename
+            # try to create absolute path for filename
             search.append(self.path_dwim(source))
 
         for candidate in search:
@@ -379,7 +384,7 @@ class DataLoader:
                     break
 
         if result is None:
-            raise AnsibleFileNotFound(file_name=source, paths=search)
+            raise AnsibleFileNotFound(file_name=source, paths=[to_text(p) for p in search])
 
         return result
 
@@ -404,7 +409,7 @@ class DataLoader:
         Temporary files are cleanup in the destructor
         """
 
-        if not file_path or not isinstance(file_path, string_types):
+        if not file_path or not isinstance(file_path, (binary_type, text_type)):
             raise AnsibleParserError("Invalid filename: '%s'" % to_native(file_path))
 
         b_file_path = to_bytes(file_path, errors='surrogate_or_strict')

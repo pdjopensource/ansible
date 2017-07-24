@@ -32,6 +32,7 @@ Ansible Changes By Release
 * Configuration has been changed from a hardcoded into the constants module to dynamically loaded from yaml definitions
   - Also added an ansible-config CLI to allow for listing config options and dumping current config (including origin)
   - TODO: build upon this to add many features detailed in ansible-config proposal https://github.com/ansible/proposals/issues/35
+* Windows modules now support the use of multiple shared module_utils files in the form of Powershell modules (.psm1), via `#Requires -Module Ansible.ModuleUtils.Whatever.psm1`
 
 ### Deprecations
 * The behaviour when specifying `--tags` (or `--skip-tags`) multiple times on the command line
@@ -44,6 +45,9 @@ Ansible Changes By Release
 * Those using ansible as a library should note that the `ansible.vars.unsafe_proxy`
   module is deprecated and slated to go away in 2.8.  The functionality has been
   moved to `ansible.utils.unsafe_proxy` to avoid a circular import.
+
+#### Deprecated Modules:
+* ec2_facts (removed in 2.7), replaced by ec2_metadata_facts
 
 ### Minor Changes
 * removed previously deprecated config option `hostfile` and env var `ANSIBLE_HOSTS`
@@ -74,6 +78,16 @@ Ansible Changes By Release
 * Add an encoding parameter for the replace module so that it can operate on non-utf-8 files
 * By default, Ansible now uses the cryptography module to implement vault instead of the older pycrypto module.
 * Changed task state resulting from both `rc` and `failed` fields returned, 'rc' no longer overrides 'failed'. Test plugins have also been updated accordingly.
+* The win_unzip module no longer includes dictionary 'win_unzip' in its results,
+  the content is now directly in the resulting output, like pretty much every other module.
+* Rewrite of the copy module so that it handles cornercases with symbolic links
+  and empty directories.  The copy module has a new parameter, local_follow
+  which controls how links on the source system are treated. (The older
+  parameter, follow is for links on the remote system.)
+* Update the handling of symbolic file permissions in file-related mode
+  parameters to deal with multiple operators.  For instance, mode='u=rw+x-X' to
+  set the execute bit on directories, remove it from filea, and set read-write
+  on both is now supported
 
 #### New Callbacks:
 - profile_roles
@@ -109,6 +123,7 @@ Ansible Changes By Release
 
 - aix_lvol
 - amazon
+  * ec2_metadata_facts
   * ec2_vpc_endpoint
   * iam_cert_facts
   * lightsail
@@ -232,6 +247,7 @@ Ansible Changes By Release
   * vmware_guest_find
 - windows
   * win_defrag
+  * win_domain_group
   * win_dsc
   * win_firewall
   * win_psmodule
